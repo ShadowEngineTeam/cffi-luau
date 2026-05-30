@@ -9,6 +9,8 @@
 #ifndef PLATFORM_HH
 #define PLATFORM_HH
 
+#include <cstdio>
+
 /* OS; defined to be luajit compatible
  *
  * If undetected, it will still work, but the OS will be "Other"
@@ -332,5 +334,12 @@
 /* MSVC and clang */
 
 #define _CRT_SECURE_NO_WARNINGS 1
+
+/* Luau does not define LUA_FILEHANDLE (no io library); cffi-luau references
+ * it for FILE* userdata conversion, but the code path is dead on Luau.
+ */
+#ifndef LUA_FILEHANDLE
+#define LUA_FILEHANDLE "FILE*"
+#endif
 
 #endif /* PLATFORM_HH */
