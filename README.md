@@ -1,43 +1,48 @@
-# cffi-lua
+# cffi-luau
 
-[![Build Status](https://github.com/q66/cffi-lua/actions/workflows/build.yaml/badge.svg)](https://github.com/q66/cffi-lua/actions)
+A `libffi`-based C FFI for [Luau](https://luau.org), ported from
+[cffi-lua](https://github.com/q66/cffi-lua). It aims to be mostly compatible
+with the LuaJIT FFI, but written from scratch on top of `libffi`, so it works
+across many operating systems and CPU architectures.
 
-This is a portable C FFI for Lua, based on `libffi` and aiming to be mostly
-compatible with LuaJIT FFI, but written from scratch. Compatibility is
-preserved where reasonable, but not where not easily implementable (e.g.
-the parser extensions for 64-bit `cdata` and so on). Thanks to `libffi`,
-it works on many operating systems and CPU architectures. The `cffi-lua`
-codebase itself does not contain any non-portable code (with the exception
-of things such as Windows calling convention handling on x86, and some
-adjustments for big endian architectures). Some effort was also taken to
-ensure compatibility with custom Lua configurations (e.g. with changed
-numeric type representations), though this is not tested or guaranteed
-to work (patches welcome if broken).
+This fork targets **Luau exclusively** and builds with **CMake**. The original
+project supports reference Lua 5.1–5.5 and LuaJIT via Meson; this one drops the
+multi-version machinery and adapts the C++ to Luau's C API.
 
-Unlike LuaJIT's `ffi` module or other efforts such as `luaffifb`, it works
-with every common version of the reference Lua implementation, currently
-5.1 to 5.5 inclusive. Version-specific functionality is supported when
-used with that version, e.g. seamless integers, bit-ops, to-be-closed
-variable support in metatypes, and so on.
+## How it differs from cffi-lua
 
-Lua 5.1 was chosen as the minimum viable version, due to 5.0 lacking
-support for module loading via `require()` and significant gaps in the
-C API that would require significant workarounds. It is the intention to
-support newer versions as they are released, while keeping backwards
-compatibility.
+Luau is, at the C API level, close to Lua 5.1, but it diverges in ways that
+matter for an FFI. The port handles these as follows:
 
-Since it's written from scratch, having 1:1 bug-for-bug C parser compatibility
-is a non-goal. The parser is meant to comply with C11, plus a number of
-extensions from GCC, MSVC and C++ (where it doesn't conflict with C).
+- **No native module loader.** Luau has no `require()`/`package.loadlib` for C
+  modules, so this is built as a **static library** that you link into a host
+  embedding Luau. There is no loadable `.so`/`.dll` module. Call
+  `luaopen_cffi(L)` yourself (see *Embedding*).
+- **No `__gc` metamethods.** Luau frees userdata via per-tag C destructors
+  registered with `lua_setuserdatadtor` (and `lua_newuserdatadtor` for
+  state-free storage), not `__gc`. cffi-luau uses these for all internal
+  cleanup. Consequences:
+  - **User finalizers do not run.** `cffi.gc(cd, fn)` and a `__gc` field in a
+    `cffi.metatype` are accepted but the finalizer is **never invoked** — Luau
+    cannot safely run Lua code during collection. Free such resources
+    explicitly instead. (The registry slot is still released, so there is no
+    leak from the FFI's side; only your finalizer is skipped.)
+  - Callbacks are still released explicitly via `callback:free()`, as before.
+- **Numbers are doubles.** Luau's base language has no integer subtype, so
+  Lua-number ↔ C-integer conversions go through `double`. Use 64-bit integer
+  **cdata** when you need full width; passing a plain Lua number as a 64-bit C
+  integer is limited to what a `double`/`int` can represent.
+- **`extern "C"` is not used** around the Luau headers — Luau's API has C++
+  linkage by default (we do not enable `LUAU_EXTERN_C`).
 
-The project was started because there isn't any FFI for standard Lua that's
-as user friendly as LuaJIT's and doesn't have portability issues.
-
-## Current status
-
-See `STATUS.md`.
+Everything else — the C parser, type system, struct/union/array handling,
+calling conventions, callbacks, `cffi.load` of shared libraries, and the
+non-`__gc` metamethods (`__index`, `__add`, `__call`, …) — works as in the
+upstream project.
 
 ## Notable differences from LuaJIT
+
+(inherited from cffi-lua)
 
 - Equality comparisons against `nil` always result in `false`
 - Equality comparisons between `cdata` and Lua values are always `false`
@@ -45,255 +50,90 @@ See `STATUS.md`.
 - Bitfields are not supported
 - Several new API extensions
 
-Equality comparions work this way due to limitations of the Lua metamethod
-semantics. Use `cffi.nullptr` instead. The other limitations are caused by
-`libffi` not supporting these features portably.
+Use `cffi.nullptr` instead of comparing against `nil`. See `docs/` for the
+full API and semantics, and `STATUS.md` for feature status.
 
 ## Dependencies
 
-The dependencies are kept intentionally minimal.
-
-- A C++ compiler supporting the right subset of C++14
-- Lua 5.1 or newer (tested up to and including 5.5) or equivalent (e.g. LuaJIT)
-- `libffi` (built with `meson` subproject if missing)
-- `meson`
-
-Optional dependencies:
-
-- `pkg-config` (for automated Lua finding)
-- A Lua executable (only for tests)
-
-These toolchains have been tested:
-
-- GCC 7+ (all platforms)
-- Clang 8+ (all platforms)
-- Visual Studio 2017+ (with updates)
-
-Other toolchains may also work. The theoretical minimum is GCC 4.8 and
-Clang 3.4 (an updated VS 2017 is already the minimum, older versions are
-missing necessary language features). It is ensured that no non-standard
-extensions are used, so as long as your compiler is C++14 compliant, it
-should work (technically there are some GCC/Clang/MSVC-specific diagnostic
-pragmas used, but these are conditional and only used to control warnings).
-
-The module should work on any CPU architecture supported by `libffi`. The CI
-system tests a large variety of CPU architectures (see `STATUS.md`). If you
-encounter any issues on yours, please send patches or at least report them
-so they can be fixed.
-
-The `pkg-config` tool is optional when using `-Dlua_version=custom` and
-vendored `libffi` (through build options or subproject). However, for
-`custom` libffi, you will need to manually specify what to include and link.
+- A C++17 compiler (Luau requires C++17)
+- CMake ≥ 3.19
+- A Luau source checkout (built from source via `add_subdirectory`)
+- `libffi` (fetched and built automatically via `FetchContent`)
 
 ## Building
 
-On Unix-like systems:
+cffi-luau is a static library. Point it at your Luau checkout and configure:
 
-```
-$ mkdir build
-$ cd build
-$ meson ..
-$ ninja all
+```sh
+cmake -S . -B build -DLUAU_SOURCE_DIR=/path/to/luau
+cmake --build build
 ```
 
-This will configure the module for the default Lua version in your system.
-If your system does not provide a default `lua.pc` `pkg-config` file, you
-will need to explicitly set the version with e.g. `-Dlua_version=5.2`
-passed to `meson`. You will also need to do this if you with to compile
-for a different Lua version than your default `lua.pc` provides.
+`libffi` is pulled in automatically with `FetchContent` and built statically.
+Relevant options:
 
-By default, a Lua loadable module will be built. This module can be installed
-in a path that Lua expects. On Unix-like systems, the `ninja install` target
-can do that.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `LUAU_SOURCE_DIR` | `../luau` | Path to the Luau source tree |
+| `CFFI_BUILD_TESTS` | `ON` | Build the Luau test host and CTest cases |
+| `CFFI_USE_SYSTEM_LIBFFI` | `OFF` | Use an installed libffi (pkg-config / `find_library`) instead of fetching |
+| `CFFI_LIBFFI_GIT_REPOSITORY` | blade-lang/ffi | Git URL of the CMake libffi fork to fetch |
+| `CFFI_LIBFFI_GIT_TAG` | `main` | Tag/branch/commit of that fork |
 
-There is also an option to build a static library, by passing `-Dstatic=true`
-to `meson`. This is mainly intended for either application usages that will
-embed the FFI, or for various specialized platforms that do not support
-shared libraries or don't have a version of Lua configured to support modules.
-This version is usually not meant to be distributed. To use the static version,
-you will need to declare the `luaopen_cffi` symbol with the usual Lua function
-signature, `lua_pushcfunction` it on the stack and for example store it in
-`package.preload`.
+If you already have a CMake-buildable `libffi` or a system one, set
+`-DCFFI_USE_SYSTEM_LIBFFI=ON`, or override the repository/tag to pin a fork.
 
-You can also pass `luajit` to `-Dlua_version` to build against LuaJIT (it
-will use `luajit.pc` then). Additionally, if you have a different Lua
-implementation than that but it still provides the same compliant API,
-you can bypass the check with `-Dlua_version=custom` and then provide
-the appropriate include path and linkage via `CXXFLAGS` and `LDFLAGS`.
+## Embedding
 
-It is also possible to pass `-Dlua_version=vendor`, in which case the
-library will be taken from `deps` and the includes from `deps/include`.
-The `deps` directory can be either in the source root or in the directory
-you run `meson` from.
+Link the `cffi` target into your host and open the module after the standard
+libraries:
 
-Keep in mind that on Unix-likes, it is not necessary to actually link against
-the Lua library. Even when using `pkg-config`, the build system will always
-remove the linkage. The Lua symbols are instead supplied to the module
-through the executable it's loaded from. This does not work on Windows,
-where you actually need to link against the DLL for Lua modules to work.
+```cpp
+#include <lua.h>
+#include <lualib.h>
 
-When using `homebrew` on macOS, its `libffi` is not installed globally.
-Therefore, you will need to set your `PKG_CONFIG_PATH` so that `pkg-config`
-can find its `.pc` file.
+extern "C" int luaopen_cffi(lua_State *L);
 
-You can also use `-Dlibffi=custom` if you wish to completely override what
-`libffi` is used. In that case you will need to provide the right include
-path in `CXXFLAGS` so that either `<ffi.h>` or `<ffi/ffi.h>` can be included,
-plus linkage in `LDFLAGS`.
+lua_State *L = luaL_newstate();
+luaL_openlibs(L);
 
-When `libffi` cannot be found in the system and you have not overridden how
-it is supplied, a Meson subproject will be automatically used (and `libffi`
-will be statically linked into the module).
-
-It is also possible to pass `-Dlua_install_path=...` to override where the
-Lua module will be installed. See below for that.
-
-The `shared_libffi` option will make libffi provide `dllimport`-decorated APIs
-on Windows; for Lua this is the default as there is always a DLL. On other
-systems, it does nothing. This is not strictly necessary, but it will make
-things faster when you're really using dynamic versions of those, and it's not
-possible to autodetect. Usually, you should be using static libffi on Windows.
-
-### Windows and MSVC style environment
-
-To build on Windows with an MSVC-style toolchain, first get yourself the right
-version of Lua and optionally a binary distribution of `libffi`. They must be
-compatible with the runtime you're targeting.
-
-Drop the `.lib` files (import lib for Lua, optionally static or import lib for
-`libffi`) in the `deps` directory (either in the source root or the directory
-you are running `meson` from). The naming is up to you, `meson` will accept
-library names with or without `lib` prefix, and the build system accepts both
-unversioned and versioned to cover all environments. Usually, for Lua you will
-have something like `lua53.lib`. Also, if providing your own `libffi`, drop the
-include files (`ffi.h` and `ffitarget.h`) into `deps/include`, same with the Lua
-include files.
-
-It is recommended that you always use a static library for `libffi` if providing
-one.
-
-Drop any `.dll` files in the `deps` directory also. This would be the Lua
-dll file typically (e.g. `lua53.dll`).
-
-If you wish to run tests, also drop in the Lua executable, following the
-same naming scheme as the `.dll` file (or simply called `lua.exe`). If
-you don't do that, you will need to pass `-Dtests=false` to `meson` as well.
-
-Afterwards, run `meson` from the `build` directory (create it), like this:
-
-```
-meson .. -Dlua_version=vendor
+lua_pushcfunction(L, luaopen_cffi, "luaopen_cffi");
+lua_call(L, 0, 1);          // leaves the cffi table on the stack
+lua_setglobal(L, "ffi");    // now usable from Luau as `ffi`
 ```
 
-Add `-Dlibffi=vendor` if providing a `libffi`.
+In CMake:
 
-Then proceed with the usual:
-
-```
-ninja all
-ninja test
+```cmake
+add_subdirectory(cffi-luau)   # provides the `cffi` target
+target_link_libraries(your_host PRIVATE cffi)
 ```
 
-Examples of such environment are the Visual Studio environment itself and
-also Clang for Windows by default.
-
-### Windows and MinGW/MSYS style environment
-
-This environment is Unix-like, so install the necessary dependencies as you
-would on Linux. In an MSYS2 environment, this would be something like:
-
-```
-pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-pkg-config
-pacman -S mingw-w64-x86_64-meson
-pacman -S mingw-w64-x86_64-lua
-```
-
-Particularly for MSYS2, you should use dependencies from just one repo,
-as e.g. `meson` installed from the MSYS2 repo won't detect `mingw-w64`
-libraries and so on.
-
-After that, proceed as you would on Linux:
-
-```
-meson .. -Dlua_version=5.3
-```
-
-You might also want to provide `-static-libgcc -static-libstdc++` in `LDFLAGS`
-if you wish to distribute the resulting module/library, otherwise they will
-carry dependencies the `libgcc` and `libstdc++-6` DLLs.
-
-Compile and test with:
-
-```
-ninja all
-ninja test
-```
-
-For plain MinGW, this will be similar, except you will need to manually provide
-your the dependencies.
-
-## Installing
-
-```
-$ ninja install
-```
-
-This will install either the module or the static library depending on how
-you have configured the build.
-
-By default, the Lua module will install in `$(libdir)/lua/$(luaver)`, e.g.
-`/usr/lib/lua/5.2`. This is the default for most Lua installations. You can
-override that with `-Dlua_install_path=...`. The path is the entire
-installation path. You can insert `@0@` in it, which will be replaced with
-the Lua version you're building for (e.g. `5.2`). No other substitutions are
-performed.
-
-The goal of this is to make sure the module will be installed in a location
-contained in your Lua's `package.cpath`.
+Userdata tags `70` and `71` are used by default for cdata and library handles
+(Luau requires tags for destructors). If your host already uses those tags,
+override them: `-DCMAKE_CXX_FLAGS="-DCFFI_CDATA_UTAG=... -DCFFI_CLIB_UTAG=..."`.
 
 ## Testing
 
-The module uses a native Lua executable to run tests. Since by default tests
-are enabled, the build system will search for the executable. If your copy of
-Lua is in a non-standard path, you can use `-Dlua_path=...` when configuring
-to explicitly specify where the executable is stored.
+The suite is the upstream one (minus the Lua-5.4-specific `metatype54`), run by
+a small embedded Luau host (`tests/host.cc`) instead of a standalone
+interpreter, since Luau has no `require`/`os.exit`/`package` to drive it.
 
-Tests are only runnable when all of the following is met:
-
-- You are not cross-compiling
-- You are doing a module build (i.e. not `-Dstatic=true`)
-- The Lua executable matches the language version you are building for
-
-Either way, you can run tests with the following:
-
-```
-$ ninja test
+```sh
+cmake -S . -B build -DLUAU_SOURCE_DIR=/path/to/luau
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-You can see the available test cases in `tests`, they also serve as examples.
+Each case runs as a separate process; a test that calls `skip_test()` exits
+`77` and is reported as skipped. You can also run a single case directly:
 
-Some of the tests only work if `cffi` is built with working `cffi.load`. This
-is nearly always true when you are building a module, since `cffi` supports
-more targets than Lua itself with module loading.
-
-You can also run the individual test cases standalone, like this:
-
-```
-$ lua path/to/cffi/tests/runner.lua path/to/test/case.lua
+```sh
+build/tests/cffi_test_host tests/simple.lua build/tests/testlib.<dll|so>
 ```
 
-The environment variable `TESTS_PATH` can be used to manually specify the tests
-directory. Usually this is not necessary as it's automatically figured out.
+## Credits
 
-You can also specify `CFFI_PATH` as the path where `cffi.so` or `.dll` is stored.
-By default, it is assumed default `package.cpath` contains it somewhere.
-
-Additionally, `TESTLIB_PATH` should be specified as a path to the test support
-library. This library contains utilities used by some of the tests, like various
-native calls and global symbols. By default, it is stored in `build/tests`.
-If you do not specify this, tests requiring it will not run.
-
-Test cases ordinarily do not print anything to standard output or error. If the
-return code is `0`, the test has succeeded. If it is `77`, the test was skipped,
-e.g. because of the testlib not being found. In case of hard failures, an
-assertion error will be raised.
+This is a port of [cffi-lua](https://github.com/q66/cffi-lua) by Daniel "q66"
+Kolesa and contributors. See `COPYING.md` and `.mailmap` for licensing and
+authorship of the original work.

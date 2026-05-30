@@ -2773,20 +2773,14 @@ lerr:
 }
 
 void init(lua_State *L) {
-    /* init parser state for each lua state */
+    /* init parser state for each lua state; it only needs a C++ destructor,
+     * so use Luau's lua_newuserdatadtor (Luau has no __gc metamethod) */
     auto *p = static_cast<parser_state *>(
-        lua_newuserdata(L, sizeof(parser_state))
+        lua_newuserdatadtor(L, sizeof(parser_state), [](void *pp) {
+            static_cast<parser_state *>(pp)->~parser_state();
+        })
     );
     new (p) parser_state{};
-    /* make sure its destructor is invoked later */
-    lua_newtable(L); /* parser_state metatable */
-    lua_pushcfunction(L, [](lua_State *LL) -> int {
-        auto *pp = lua::touserdata<parser_state>(LL, 1);
-        pp->~parser_state();
-        return 0;
-    });
-    lua_setfield(L, -2, "__gc");
-    lua_setmetatable(L, -2);
     /* store */
     lua_setfield(L, LUA_REGISTRYINDEX, lua::CFFI_PARSER_STATE);
     /* initialize keywords */

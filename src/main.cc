@@ -1,27 +1,24 @@
-/* This file exists as it may be compiled in multiple versions depending on
- * how the entry point is exported. This is particularly true on Windows, where
- * when compiling as DLL, the 'luaopen_cffi' symbol must be dllexport, while
- * for a static lib it must be unmarked.
+/* Entry point for cffi-luau.
  *
- * On Unix-like platforms, all symbols are hidden by default if supported by
- * the compiler, with 'luaopen_cffi' being the sole visible symbol, this is
- * not dependent on how we're compiling it.
+ * Luau has no native module loader (no require()/package.loadlib), so unlike
+ * the original cffi-lua this is not a dynamically loadable module: it is meant
+ * to be statically linked into a host application that embeds Luau.
+ *
+ * After creating your lua_State and opening the standard libraries, call
+ * luaopen_cffi(L). It leaves the cffi module table on top of the stack and
+ * returns 1, so a typical host registers it as a global like this:
+ *
+ *     lua_pushcfunction(L, luaopen_cffi, "luaopen_cffi");
+ *     lua_call(L, 0, 1);
+ *     lua_setglobal(L, "ffi");
  */
 
 #include "lua.hh"
 
-#if defined(__CYGWIN__) || (defined(_WIN32) && !defined(_XBOX_VER))
-#  ifdef CFFI_LUA_DLL
-#    define CFFI_LUA_EXPORT __declspec(dllexport)
-#  else
-#    define CFFI_LUA_EXPORT
-#  endif
+#if defined(__GNUC__) && (__GNUC__ >= 4)
+#  define CFFI_LUA_EXPORT __attribute__((visibility("default")))
 #else
-#  if defined(__GNUC__) && (__GNUC__ >= 4)
-#    define CFFI_LUA_EXPORT __attribute__((visibility("default")))
-#  else
-#    define CFFI_LUA_EXPORT
-#  endif
+#  define CFFI_LUA_EXPORT
 #endif
 
 void ffi_module_open(lua_State *L);

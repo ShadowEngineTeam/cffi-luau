@@ -15,9 +15,11 @@
  * of loaded shared libraries as well as the primary C namespace.
  */
 struct lib_meta {
-    static int gc(lua_State *L) {
-        lib::close(lua::touserdata<lib::c_lib>(L, 1), L);
-        return 0;
+    /* Luau has no __gc; library handles are tagged with lua::CLIB_UTAG and
+     * this is registered as their destructor via lua_setuserdatadtor.
+     */
+    static void gc_dtor(lua_State *L, void *p) {
+        lib::close(static_cast<lib::c_lib *>(p), L);
     }
 
     static int tostring(lua_State *L) {
@@ -50,8 +52,7 @@ struct lib_meta {
         lua_pushliteral(L, "ffi");
         lua_setfield(L, -2, "__metatable");
 
-        lua_pushcfunction(L, gc);
-        lua_setfield(L, -2, "__gc");
+        /* no __gc on Luau: cleanup happens via the CLIB_UTAG destructor */
 
         lua_pushcfunction(L, index);
         lua_setfield(L, -2, "__index");
@@ -75,9 +76,11 @@ struct lib_meta {
  * - value cdata (primitives)
  */
 struct cdata_meta {
-    static int gc(lua_State *L) {
-        ffi::destroy_cdata(L, ffi::tocdata(L, 1));
-        return 0;
+    /* Luau has no __gc; cdata are tagged with lua::CDATA_UTAG and this is
+     * registered as their destructor via lua_setuserdatadtor (see open()).
+     */
+    static void gc_dtor(lua_State *L, void *p) {
+        ffi::destroy_cdata(L, *static_cast<ffi::cdata *>(p));
     }
 
     static int metatype_getmt(lua_State *L, int idx, int &mflags) {
@@ -913,20 +916,10 @@ struct cdata_meta {
         lua_pushliteral(L, "ffi");
         lua_setfield(L, -2, "__metatable");
 
-        /* this will store registered permanent struct/union metatypes
-         *
-         * it's used instead of regular lua registry because there is no
-         * way to reasonably garbage collect these references, and they die
-         * with the rest of the ffi anyway, so...
-         */
-        lua_newtable(L);
-        lua_setfield(L, -2, "__ffi_metatypes");
-
         lua_pushcfunction(L, tostring);
         lua_setfield(L, -2, "__tostring");
 
-        lua_pushcfunction(L, gc);
-        lua_setfield(L, -2, "__gc");
+        /* no __gc on Luau: cleanup happens via the CDATA_UTAG destructor */
 
         lua_pushcfunction(L, call);
         lua_setfield(L, -2, "__call");
@@ -1143,13 +1136,14 @@ struct ffi_module {
 
 #undef FIELD_CHECK
 
-        /* get the metatypes table on the stack */
-        luaL_getmetatable(L, lua::CFFI_CDATA_MT);
-        lua_getfield(L, -1, "__ffi_metatypes");
-        /* the metatype */
+        /* Store the metatype table as a registry ref. Luau's lua_ref is
+         * registry-only (it cannot ref into an arbitrary table the way
+         * reference Lua's luaL_ref does), and metatypes are permanent for the
+         * life of the state anyway, so the registry is the natural home.
+         */
         lua_pushvalue(L, 2);
         const_cast<ast::c_record &>(ct.record()).metatype(
-            luaL_ref(L, -2), mflags
+            luaL_ref(L, LUA_REGISTRYINDEX), mflags
         );
 
         lua_pushvalue(L, 1);
@@ -1160,7 +1154,7 @@ struct ffi_module {
         char const *path = luaL_checkstring(L, 1);
         bool glob = (lua_gettop(L) >= 2) && lua_toboolean(L, 2);
         auto *c_ud = static_cast<lib::c_lib *>(
-            lua_newuserdata(L, sizeof(lib::c_lib))
+            lua_newuserdatatagged(L, sizeof(lib::c_lib), lua::CLIB_UTAG)
         );
         new (c_ud) lib::c_lib{};
         lib::load(c_ud, path, L, glob);
@@ -1642,30 +1636,29 @@ argcheck:
     }
 
     static void setup_dstor(lua_State *L) {
-        /* our declaration storage is a userdata in the registry */
+        /* Declaration storage is a userdata kept in the registry. It only
+         * needs a C++ destructor (no Lua-side cleanup), so use Luau's
+         * lua_newuserdatadtor -- no tag, no metatable, no __gc required.
+         */
         auto *ds = static_cast<ast::decl_store *>(
-            lua_newuserdata(L, sizeof(ast::decl_store))
+            lua_newuserdatadtor(L, sizeof(ast::decl_store), [](void *p) {
+                static_cast<ast::decl_store *>(p)->~decl_store();
+            })
         );
         new (ds) ast::decl_store{};
-        /* stack: dstor */
-        lua_newtable(L);
-        /* stack: dstor, mt */
-        lua_pushcfunction(L, [](lua_State *LL) -> int {
-            using T = ast::decl_store;
-            auto *dsp = lua::touserdata<T>(LL, 1);
-            dsp->~T();
-            return 0;
-        });
-        /* stack: dstor, mt, __gc */
-        lua_setfield(L, -2, "__gc");
-        /* stack: dstor, __mt */
-        lua_setmetatable(L, -2);
         /* stack: dstor */
         lua_setfield(L, LUA_REGISTRYINDEX, lua::CFFI_DECL_STOR);
         /* stack: empty */
     }
 
     static void open(lua_State *L) {
+        /* Luau frees userdata via per-tag C destructors instead of __gc.
+         * Register them before any tagged userdata is created (the NULL cdata
+         * and the default C library below are created during setup).
+         */
+        lua_setuserdatadtor(L, lua::CDATA_UTAG, &cdata_meta::gc_dtor);
+        lua_setuserdatadtor(L, lua::CLIB_UTAG, &lib_meta::gc_dtor);
+
         setup_dstor(L); /* declaration store */
         parser::init(L);
 
@@ -1676,7 +1669,7 @@ argcheck:
 
         /* lib handles, needs the module table on the stack */
         auto *c_ud = static_cast<lib::c_lib *>(
-            lua_newuserdata(L, sizeof(lib::c_lib))
+            lua_newuserdatatagged(L, sizeof(lib::c_lib), lua::CLIB_UTAG)
         );
         new (c_ud) lib::c_lib{};
         lib::load(c_ud, nullptr, L, false);

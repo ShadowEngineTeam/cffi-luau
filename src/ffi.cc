@@ -93,13 +93,19 @@ static inline void **fargs_values(ffi::scalar_stor_t *args, std::size_t nargs) {
 }
 
 void destroy_cdata(lua_State *L, cdata &cd) {
+    /* On Luau this runs from a tagged-userdata destructor during GC, where
+     * re-entering the VM (lua_pcall, pushing values, ...) is unsafe. We
+     * therefore cannot honor a user-defined __gc finalizer here -- that
+     * LuaJIT-FFI feature is unsupported on Luau (see make_cdata in ffi.cc,
+     * which no longer records a finalizer ref). Only internal cleanup runs;
+     * the lua_unref used by the aux/closure paths is safe as it merely touches
+     * the registry freelist.
+     */
     if (cd.gc_ref >= 0) {
-        lua_rawgeti(L, LUA_REGISTRYINDEX, cd.gc_ref);
-        lua_pushvalue(L, 1); /* the cdata */
-        if (lua_pcall(L, 1, 0, 0)) {
-            lua_pop(L, 1);
-        }
+        /* a cffi.gc() finalizer ref was set; release the registry slot so it
+         * does not leak (the finalizer is intentionally not invoked) */
         luaL_unref(L, LUA_REGISTRYINDEX, cd.gc_ref);
+        cd.gc_ref = LUA_REFNIL;
     }
     switch (cd.decl.type()) {
         case ast::C_BUILTIN_PTR:
@@ -1617,16 +1623,12 @@ newdata:
         }
         /* perform aggregate initialization */
         from_lua_aggreg(L, decl, dptr, msz, ninits, iidx);
-        /* set a gc finalizer if provided in metatype */
-        if (decl.type() == ast::C_BUILTIN_RECORD) {
-            int mf;
-            int mt = decl.record().metatype(mf);
-            if (mf & METATYPE_FLAG_GC) {
-                if (metatype_getfield(L, mt, "__gc")) {
-                    cd.gc_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-                }
-            }
-        }
+        /* A metatype-defined __gc finalizer would normally be recorded here.
+         * Luau has no safe way to run Lua code at collection time (userdata
+         * destructors run mid-GC where re-entering the VM is unsafe), so this
+         * feature is unsupported: cd.gc_ref stays LUA_REFNIL and no finalizer
+         * is invoked. All other metamethods work as usual.
+         */
     }
 }
 

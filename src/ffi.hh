@@ -227,7 +227,10 @@ static inline cdata &newcdata(
     lua_State *L, ast::c_type const &tp, std::size_t vals
 ) {
     auto ssz = cdata_pad_size() + vals;
-    auto *cd = static_cast<cdata *>(lua_newuserdata(L, ssz));
+    /* Luau has no __gc; cdata are tagged and freed via a registered dtor */
+    auto *cd = static_cast<cdata *>(
+        lua_newuserdatatagged(L, ssz, lua::CDATA_UTAG)
+    );
     new (cd) cdata{tp.copy()};
     cd->gc_ref = LUA_REFNIL;
     cd->aux = 0;
@@ -237,7 +240,10 @@ static inline cdata &newcdata(
 
 template<typename ...A>
 static inline ctype &newctype(lua_State *L, A &&...args) {
-    auto *cd = static_cast<ctype *>(lua_newuserdata(L, sizeof(ctype)));
+    /* ctypes share the cdata tag/dtor; the dtor dispatches via isctype() */
+    auto *cd = static_cast<ctype *>(
+        lua_newuserdatatagged(L, sizeof(ctype), lua::CDATA_UTAG)
+    );
     new (cd) ctype{ast::c_type{util::forward<A>(args)...}};
     cd->ct_tag = lua::CFFI_CTYPE_TAG;
     lua::mark_cdata(L);
@@ -351,20 +357,20 @@ void set_global(lua_State *L, lib::c_lib const *dl, char const *sname, int idx);
 void make_cdata(lua_State *L, ast::c_type const &decl, int rule, int idx);
 
 static inline bool metatype_getfield(lua_State *L, int mt, char const *fname) {
-    luaL_getmetatable(L, lua::CFFI_CDATA_MT);
-    lua_getfield(L, -1, "__ffi_metatypes");
-    lua_rawgeti(L, -1, mt);
+    /* metatypes are stored as registry refs (see the metatype setter in
+     * ffilib.cc); `mt` is the registry key */
+    lua_rawgeti(L, LUA_REGISTRYINDEX, mt);
     if (lua_istable(L, -1)) {
         lua_getfield(L, -1, fname);
         if (!lua_isnil(L, -1)) {
-            lua_insert(L, -4);
-            lua_pop(L, 3);
+            lua_insert(L, -2);
+            lua_pop(L, 1);
             return true;
         } else {
             lua_pop(L, 1);
         }
     }
-    lua_pop(L, 3);
+    lua_pop(L, 1);
     return false;
 }
 
