@@ -134,6 +134,5 @@ build/tests/cffi_test_host tests/simple.lua build/tests/testlib.<dll|so>
 
 ## Credits
 
-This is a port of [cffi-lua](https://github.com/q66/cffi-lua) by Daniel "q66"
-Kolesa and contributors. See `COPYING.md` and `.mailmap` for licensing and
+This is a port of [cffi-lua](https://github.com/q66/cffi-lua) by q66 and contributors. See `COPYING.md` and `.mailmap` for licensing and
 authorship of the original work.
