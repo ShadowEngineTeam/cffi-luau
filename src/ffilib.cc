@@ -296,19 +296,19 @@ struct cdata_meta {
             /* callbacks have some methods */
             char const *mname = lua_tostring(L, 2);
             /* if we had more methods, we'd do a table */
-            if (!std::strcmp(mname, "free")) {
-                lua_pushcfunction(L, cb_free);
-                return 1;
-            } else if (!std::strcmp(mname, "set")) {
-                lua_pushcfunction(L, cb_set);
-                return 1;
-            } else if (!mname) {
+            if (!mname) {
                 cd.decl.serialize(L);
                 luaL_error(
                     L, "'%s' cannot be indexed with '%s'",
                     lua_tostring(L, -1),
                     lua_typename(L, lua_type(L, 2))
                 );
+            } else if (!std::strcmp(mname, "free")) {
+                lua_pushcfunction(L, cb_free);
+                return 1;
+            } else if (!std::strcmp(mname, "set")) {
+                lua_pushcfunction(L, cb_set);
+                return 1;
             } else {
                 cd.decl.serialize(L);
                 luaL_error(
@@ -614,14 +614,15 @@ struct cdata_meta {
             }
             std::ptrdiff_t d;
             if (!ffi::test_arith<std::ptrdiff_t>(L, 2, d)) {
-                if (op_try_mt<ffi::METATYPE_FLAG_ADD>(L, cd1, cd2)) {
+                if (op_try_mt<ffi::METATYPE_FLAG_SUB>(L, cd1, cd2)) {
                     return 1;
                 }
                 ffi::check_arith<std::ptrdiff_t>(L, 2);
             }
             auto p = cd1->as_deref<std::uintptr_t>();
-            auto &ret = ffi::newcdata(L, cd1->decl, sizeof(void *));
-            ret.as<std::uintptr_t>() = p + d;
+            auto tp = cd1->decl.as_type(ast::C_BUILTIN_PTR);
+            auto &ret = ffi::newcdata(L, tp.unref(), sizeof(void *));
+            ret.as<std::uintptr_t>() = p - std::uintptr_t(d) * asize;
             return 1;
         }
         if (op_try_mt<ffi::METATYPE_FLAG_SUB>(L, cd1, cd2)) {
@@ -1109,6 +1110,9 @@ struct ffi_module {
         FIELD_CHECK("call", CALL)
         FIELD_CHECK("new", NEW)
         FIELD_CHECK("gc", GC)
+        if (mflags & ffi::METATYPE_FLAG_GC) {
+            luaL_error(L, "__gc metatype finalizers are not supported on Luau");
+        }
         FIELD_CHECK("tostring", TOSTRING)
 
 #if LUA_VERSION_NUM > 501
@@ -1188,9 +1192,7 @@ struct ffi_module {
                 cd.gc_ref = LUA_REFNIL;
             }
         } else {
-            /* new finalizer can be any type, it's pcall'd */
-            lua_pushvalue(L, 2);
-            cd.gc_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+            luaL_error(L, "ffi.gc() finalizers are not supported on Luau");
         }
         lua_pushvalue(L, 1); /* return the cdata */
         return 1;

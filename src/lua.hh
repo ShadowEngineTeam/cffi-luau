@@ -182,6 +182,6 @@ union user_align_t { void *p; double d; long l; };
 } /* namespace lua */
 
 #define LUA_BUG_MSG(L, msg) \
-    lua_pushfstring(L, "%s:%s: bug: %s", __FILE__, __LINE__, msg)
+    lua_pushfstring(L, "%s:%d: bug: %s", __FILE__, __LINE__, msg)
 
 #endif /* LUA_HH */
