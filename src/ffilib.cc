@@ -1643,7 +1643,7 @@ argcheck:
          * lua_newuserdatadtor -- no tag, no metatable, no __gc required.
          */
         auto *ds = static_cast<ast::decl_store *>(
-            lua_newuserdatadtor(L, sizeof(ast::decl_store), [](void *p) {
+            lua_newuserdatadtor(L, sizeof(ast::decl_store), [](lua_State *, void *p) {
                 static_cast<ast::decl_store *>(p)->~decl_store();
             })
         );

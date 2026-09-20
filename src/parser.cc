@@ -2776,7 +2776,7 @@ void init(lua_State *L) {
     /* init parser state for each lua state; it only needs a C++ destructor,
      * so use Luau's lua_newuserdatadtor (Luau has no __gc metamethod) */
     auto *p = static_cast<parser_state *>(
-        lua_newuserdatadtor(L, sizeof(parser_state), [](void *pp) {
+        lua_newuserdatadtor(L, sizeof(parser_state), [](lua_State *, void *pp) {
             static_cast<parser_state *>(pp)->~parser_state();
         })
     );
